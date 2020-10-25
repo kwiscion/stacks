@@ -11,6 +11,8 @@ blend_predictions(
   metric = NULL,
   control = tune::control_grid(),
   verbose = FALSE,
+  use_candidate_resampling = FALSE,
+  regression_type = "lasso",
   ...
 )
 }
@@ -38,6 +40,12 @@ entry will be overwritten internally.}
 
 \item{verbose}{A logical for logging results as they are generated. Despite
 this argument, warnings and errors are always shown.}
+
+\item{use_candidate_resampling}{A logical for using the same resampling for
+blending predictions as for candidate models.}
+
+\item{regression_type}{A string indicating wether to use \code{lasso} or \code{ridge}
+regression}
 
 \item{...}{Additional arguments. Currently ignored.}
 }

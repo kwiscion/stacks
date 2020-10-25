@@ -35,6 +35,10 @@
 #'   entry will be overwritten internally.
 #' @param verbose A logical for logging results as they are generated. Despite 
 #'   this argument, warnings and errors are always shown.
+#' @param use_candidate_resampling A logical for using the same resampling for 
+#'   blending predictions as for candidate models.
+#' @param regression_type A string indicating wether to use `lasso` or `ridge` 
+#'   regression
 #' @inheritParams add_candidates
 #' 
 #' @return A `model_stack` object—while `model_stack`s largely contain the
@@ -106,7 +110,8 @@
 blend_predictions <- function(data_stack, penalty = 10 ^ (-6:-1), 
                               non_negative = TRUE, metric = NULL,
                               control = tune::control_grid(),
-                              verbose = FALSE,  ...) {
+                              verbose = FALSE, use_candidate_resampling = FALSE, 
+                              regression_type = "lasso", ...) {
   check_inherits(data_stack, "data_stack")
   check_blend_data_stack(data_stack)
   check_penalty(penalty)
@@ -125,13 +130,22 @@ blend_predictions <- function(data_stack, penalty = 10 ^ (-6:-1),
   
   lvls <- levels(data_stack[[outcome]])
   
-  dat <- tibble::as_tibble(data_stack) %>% na.omit()
+  if(use_candidate_resampling) {
+    dat <- tibble::as_tibble(data_stack) %>% na.fail()
+    rsmpl <- get_candidate_resampling(data_stack)
+    
+  } else {
+    dat <- tibble::as_tibble(data_stack) %>% na.omit()
+    rsmpl <- rsample::bootstraps(dat)
+  }
+  
   
   ll <- if (non_negative) {0} else {-Inf}
+  mixture <- if(regression_type == "lasso") {1} else {0}
   
   if (attr(data_stack, "mode") == "regression") {
     model_spec <- 
-      parsnip::linear_reg(penalty = tune::tune(), mixture = 1) %>%
+      parsnip::linear_reg(penalty = tune::tune(), mixture = mixture) %>%
       parsnip::set_engine("glmnet", lower.limits = ll)
     
     preds_wf <-
@@ -145,12 +159,12 @@ blend_predictions <- function(data_stack, penalty = 10 ^ (-6:-1),
     dat <- dat %>% dplyr::select(-dplyr::starts_with(!!col_filter))
     if (length(lvls) == 2) {
       model_spec <-
-        parsnip::logistic_reg(penalty = tune::tune(), mixture = 1) %>% 
+        parsnip::logistic_reg(penalty = tune::tune(), mixture = mixture) %>% 
         parsnip::set_engine("glmnet", lower.limits = ll) %>% 
         parsnip::set_mode("classification")
     } else {
       model_spec <-
-        parsnip::multinom_reg(penalty = tune::tune(), mixture = 1) %>% 
+        parsnip::multinom_reg(penalty = tune::tune(), mixture = mixture) %>% 
         parsnip::set_engine("glmnet", lower.limits = ll) %>% 
         parsnip::set_mode("classification")
     }
@@ -173,11 +187,12 @@ blend_predictions <- function(data_stack, penalty = 10 ^ (-6:-1),
   }
   
   control$extract <- get_models
+  control$save_pred <- TRUE
 
   candidates <- 
     preds_wf %>%
     tune::tune_grid(
-      resamples = rsample::bootstraps(dat),
+      resamples = rsmpl,
       grid = tibble::tibble(penalty = penalty),
       metrics = metric,
       control = control
@@ -196,6 +211,7 @@ blend_predictions <- function(data_stack, penalty = 10 ^ (-6:-1),
            coefs = coefs,
            penalty = list(penalty = best_param$penalty, metric = metric),
            metrics = glmnet_metrics(candidates),
+           pred = tune::collect_predictions(candidates, summarize = TRUE, parameters = best_param),
            equations = get_expressions(coefs),
            cols_map = attr(data_stack, "cols_map"),
            model_metrics = attr(data_stack, "model_metrics"),
@@ -298,5 +314,18 @@ check_blend_data_stack <- function(data_stack) {
   }
   
   invisible(NULL)
+}
+
+get_candidate_resampling <- function(data_stack) {
+  dat <- tibble::as_tibble(data_stack)
+  rsmpl <- attr(data_stack, "splits") 
+  class(rsmpl) <- c(attr(rsmpl, "rset_info")$att$class, "rset", class(rsmpl))
+  rsmpl$splits = purrr::map(rsmpl$splits,
+                            ~{
+                              .x$data <- dat
+                              .x
+                            })
+  
+  rsmpl
 }
 
